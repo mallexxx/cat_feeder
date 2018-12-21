@@ -5,7 +5,9 @@
 #define RTC_I2C_ADDRESS 0x68
 U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NONE);
 
-#define BUTTON 5
+#define INT 3
+#define HALL 5
+#define BUTTON 4
 #define CS 6
 #define ENA 7
 #define DIR 8
@@ -21,6 +23,8 @@ uint16_t counter = 0;
 uint8_t cnt = 0;
 uint8_t data= 0;
 char cmd;
+
+uint16_t int_counter = 0;
 
 void setTime(byte second, byte minute, byte hour, byte dayOfWeek, byte dayOfMonth, byte month, byte year) {
   // sets time and date data to DS3231
@@ -47,10 +51,18 @@ void setup() {
   pinMode(BUTTON, INPUT);
   
   driver.begin();
-  driver.rms_current(1300);
+  driver.rms_current(600);
   driver.stealthChop(1);
 
+  pinMode(HALL, OUTPUT);
+  digitalWrite(HALL, LOW);
+
+  pinMode(INT, INPUT);
+//  attachInterrupt(digitalPinToInterrupt(INT), intCallback, CHANGE);
+  int_counter = 0;
+  
   Serial.println(" Ready!");
+
 } 
 
 inline uint8_t bcd2dec(uint8_t bcd) {
@@ -76,6 +88,10 @@ void draw() {
 
   u8g.setPrintPos(10, 40);
   u8g.print(counter, DEC);
+
+  u8g.setPrintPos(60, 40);
+  u8g.print("s: ");
+  u8g.print(int_counter, DEC);
   
   u8g.setPrintPos(10, 60);
   if (togo == 0) {
@@ -90,31 +106,79 @@ void draw() {
   }
 }
 
+void drawScreen() {
+  u8g.firstPage();
+  do {
+    draw();
+  } while( u8g.nextPage() );
+}
+
 void feed(uint8_t cnt) {
   Serial.print("Feeding (");
   Serial.print(cnt, DEC);
   Serial.println(")");
-  
+  drawScreen();
+
+  digitalWrite(HALL, HIGH);
   digitalWrite(ENA, LOW);
 
-  for(uint8_t i=0; i < cnt; i++){
-    driver.shaft_dir(0);
-    for (uint16_t f=0 ; f<9000; f++) {
-      digitalWrite(STEP, HIGH);
-      delayMicroseconds(5);
-      digitalWrite(STEP, LOW);
-      delayMicroseconds(5);
-    }
-    driver.shaft_dir(1);
-    for (uint16_t f=0 ; f<16000; f++) {
-      digitalWrite(STEP, HIGH);
-      delayMicroseconds(5);
+  uint8_t hall = digitalRead(INT);
+  int_counter = 0;
 
-      digitalWrite(STEP, LOW);
-      delayMicroseconds(5);
+  uint8_t tries = 0;
+  uint16_t counter = 0;
+  uint16_t missed_steps = 0;
+
+  driver.shaft_dir(0);
+  do {
+    digitalWrite(STEP, HIGH);
+    delayMicroseconds(20);
+    digitalWrite(STEP, LOW);
+    
+    counter++;
+    if (counter % 500 == 0) {
+      Serial.print(counter, DEC);
+      Serial.print(" ");
+      Serial.println(int_counter, DEC);
+      if (digitalRead(INT) != hall) {
+        missed_steps = 0;
+        hall = !hall;
+        int_counter++;
+        driver.shaft_dir(0);
+        digitalWrite(HALL, HIGH);
+      } else {
+        missed_steps++;
+        if (missed_steps > 8) {
+          Serial.println("Going back");
+          if (int_counter > 2) 
+            int_counter -= 2;
+          drawScreen();
+          driver.shaft_dir(1);
+          for (uint16_t f=0 ; f<6000; f++) {
+            digitalWrite(STEP, HIGH);
+            delayMicroseconds(20);
+      
+            digitalWrite(STEP, LOW);
+            delayMicroseconds(20);
+          }
+          driver.shaft_dir(0);
+          missed_steps = 0;
+          hall = digitalRead(INT);
+        }
+      }
+      delayMicroseconds(10);
+    } else {
+      delayMicroseconds(20);
     }
-  }
+    if (counter == 65500) {
+      tries++;
+      counter = 0;
+    }
+  } while (int_counter < 4 * cnt && tries < 10);
+  drawScreen();
+
   digitalWrite(ENA, HIGH);
+  digitalWrite(HALL, LOW);
 }
 
 void loop() {
@@ -234,15 +298,13 @@ void loop() {
     togo = min((480 - (int16_t)hour*60-(int16_t)minute+1440)%1440, 
         min((1020 - (int16_t)hour*60-(int16_t)minute+1440)%1440, (1380 - (int16_t)hour*60-(int16_t)minute+1440)%1440));
 
-    u8g.firstPage();  
-    do {
-      draw();
-    } while( u8g.nextPage() );
+    drawScreen();
 
     if (second == 0 && togo == 0) {
         counter++;
-        feed(16);
+        feed(7);
     }
+    
     delay(250);
 }
   
